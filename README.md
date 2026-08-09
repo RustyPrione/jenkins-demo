@@ -122,6 +122,16 @@ jenkins-demo/
 **Docker build fails inside Jenkins**
 
 - Confirm Docker Desktop is running: `docker info`
+- Rebuild the custom Jenkins image (required for Docker CLI inside Jenkins):
+
+```bash
+docker compose down
+docker compose up -d --build
+docker compose exec jenkins /usr/local/bin/docker --version
+docker compose exec jenkins /usr/local/bin/docker info
+```
+
+- If `docker --version` fails inside the container, you are not running the custom `Dockerfile.jenkins` image
 - Restart the stack: `docker compose down && docker compose up -d --build`
 
 **Port 8080 already in use**
