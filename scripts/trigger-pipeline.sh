@@ -3,10 +3,18 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+if [ -f "$ROOT_DIR/.jenkins-env" ]; then
+  # shellcheck disable=SC1091
+  set -a
+  source "$ROOT_DIR/.jenkins-env"
+  set +a
+fi
+
 JENKINS_URL="${JENKINS_URL:-http://localhost:8080}"
 JENKINS_JOB="${JENKINS_JOB:-job-demo}"
 JENKINS_BRANCH="${JENKINS_BRANCH:-main}"
 GITHUB_REPO="${GITHUB_REPO:-RustyPrione/jenkins-demo}"
+JENKINS_USER="${JENKINS_USER:-admin}"
 WEBHOOK_PATH="${WEBHOOK_PATH:-/github-webhook/}"
 MODE="${1:-webhook}"
 
@@ -18,7 +26,7 @@ Usage:
   ./scripts/trigger-pipeline.sh [webhook|api|scan]
 
 Modes:
-  webhook   Simulate a GitHub push webhook to Jenkins (default)
+  webhook   Simulate a GitHub push webhook to Jenkins (default, no login required)
   api       Trigger the branch build directly via Jenkins REST API
   scan      Trigger a multibranch scan, then build the branch via API
 
@@ -27,14 +35,17 @@ Environment variables:
   JENKINS_JOB          Jenkins job name (default: job-demo)
   JENKINS_BRANCH       Branch to build (default: main)
   GITHUB_REPO          GitHub repo slug (default: RustyPrione/jenkins-demo)
-  JENKINS_USER         Jenkins username (optional)
-  JENKINS_API_TOKEN    Jenkins API token (optional)
+  JENKINS_USER         Jenkins username (required for api/scan when security is on)
+  JENKINS_API_TOKEN    Jenkins API token (required for api/scan when security is on)
   WEBHOOK_SECRET       GitHub webhook secret, if configured in Jenkins (optional)
 
+Credentials file:
+  Copy jenkins.env.example to .jenkins-env and fill in your Jenkins user/token.
+
 Examples:
-  ./scripts/trigger-pipeline.sh
+  ./scripts/trigger-pipeline.sh webhook
   ./scripts/trigger-pipeline.sh api
-  JENKINS_USER=admin JENKINS_API_TOKEN=xxx ./scripts/trigger-pipeline.sh webhook
+  JENKINS_USER=admin JENKINS_API_TOKEN=xxx ./scripts/trigger-pipeline.sh scan
 EOF
 }
 
@@ -77,39 +88,108 @@ jenkins_curl() {
   fi
 }
 
-get_crumb_args() {
+print_auth_help() {
+  cat <<EOF
+Jenkins API access requires authentication.
+
+Create an API token:
+  Jenkins UI → your user → Configure → API Token → Add new Token
+
+Then either:
+
+  export JENKINS_USER=admin
+  export JENKINS_API_TOKEN=<token>
+  ./scripts/trigger-pipeline.sh ${MODE}
+
+Or create .jenkins-env from the example file:
+
+  cp jenkins.env.example .jenkins-env
+  # edit .jenkins-env, then rerun this command
+
+If webhook mode is enough for you, use:
+  ./scripts/trigger-pipeline.sh webhook
+EOF
+}
+
+require_jenkins_auth() {
+  if [ -n "${JENKINS_USER:-}" ] && [ -n "${JENKINS_API_TOKEN:-}" ]; then
+    return 0
+  fi
+
+  echo "Missing Jenkins credentials for '${MODE}' mode."
+  echo ""
+  print_auth_help
+  exit 1
+}
+
+get_crumb_header() {
   local crumb_json crumb_field crumb
-  crumb_json="$(jenkins_curl -sf "${JENKINS_URL}/crumbIssuer/api/json" 2>/dev/null || true)"
+  crumb_json="$(jenkins_curl -s "${JENKINS_URL}/crumbIssuer/api/json" 2>/dev/null || true)"
   if [ -z "$crumb_json" ]; then
+    return 0
+  fi
+  if ! printf '%s' "$crumb_json" | grep -q '^{'; then
     return 0
   fi
 
   if command -v python3 >/dev/null 2>&1; then
-    crumb_field="$(python3 -c 'import json,sys; data=json.loads(sys.argv[1]); print(data.get("crumbRequestField", "Jenkins-Crumb"))' "$crumb_json")"
-    crumb="$(python3 -c 'import json,sys; data=json.loads(sys.argv[1]); print(data.get("crumb", ""))' "$crumb_json")"
+    crumb_field="$(python3 -c 'import json,sys; data=json.loads(sys.argv[1]); print(data.get("crumbRequestField", "Jenkins-Crumb"))' "$crumb_json" 2>/dev/null || true)"
+    crumb="$(python3 -c 'import json,sys; data=json.loads(sys.argv[1]); print(data.get("crumb", ""))' "$crumb_json" 2>/dev/null || true)"
   else
     crumb_field="Jenkins-Crumb"
     crumb="$(printf '%s' "$crumb_json" | sed -n 's/.*"crumb":"\([^"]*\)".*/\1/p')"
   fi
 
   if [ -n "$crumb" ]; then
-    printf '%s\n%s' "$crumb_field" "$crumb"
+    printf '%s: %s' "$crumb_field" "$crumb"
   fi
 }
 
 jenkins_post() {
   local url="$1"
   shift
-  local crumb_field crumb
+  local http_code crumb_header curl_args=(-sS -X POST)
 
-  if read -r crumb_field crumb < <(get_crumb_args); then
-    if [ -n "${crumb:-}" ]; then
-      jenkins_curl -sf -X POST -H "${crumb_field}: ${crumb}" "$url" "$@"
-      return
+  if crumb_header="$(get_crumb_header)"; then
+    if [ -n "${crumb_header:-}" ]; then
+      curl_args+=(-H "$crumb_header")
     fi
   fi
 
-  jenkins_curl -sf -X POST "$url" "$@"
+  http_code="$(jenkins_curl "${curl_args[@]}" -o /tmp/jenkins-trigger-body.txt -w "%{http_code}" "$url" "$@")"
+
+  printf 'HTTP_STATUS:%s\n' "$http_code"
+
+  if { [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ]; } || [ "$http_code" = "302" ]; then
+    return 0
+  fi
+
+  if [ "$http_code" = "401" ]; then
+    echo ""
+    echo "Jenkins returned 401 Unauthorized."
+    echo "Check JENKINS_USER in .jenkins-env matches the Jenkins account that owns the API token."
+    echo "Regenerate the token in Jenkins: User → Configure → API Token"
+  fi
+
+  if [ "$http_code" = "403" ]; then
+    echo ""
+    echo "Jenkins returned 403 Forbidden."
+    if [ -z "${JENKINS_USER:-}" ] || [ -z "${JENKINS_API_TOKEN:-}" ]; then
+      print_auth_help
+    else
+      echo "Credentials were provided but Jenkins still rejected the request."
+      echo "Check that the user can build job '${JENKINS_JOB}'."
+    fi
+  fi
+
+  if [ -s /tmp/jenkins-trigger-body.txt ]; then
+    echo ""
+    echo "Response body:"
+    cat /tmp/jenkins-trigger-body.txt
+    echo ""
+  fi
+
+  return 1
 }
 
 build_github_payload() {
@@ -203,6 +283,8 @@ trigger_webhook() {
 }
 
 trigger_api_build() {
+  require_jenkins_auth
+
   local build_url="${JENKINS_URL%/}/job/${JENKINS_JOB}/job/${JENKINS_BRANCH}/build?delay=0sec"
 
   echo "Triggering Jenkins build via API"
@@ -210,22 +292,23 @@ trigger_api_build() {
   echo "Commit: ${COMMIT_SHORT}"
   echo "URL: ${build_url}"
 
-  if jenkins_post "$build_url" -o /dev/null -w "HTTP_STATUS:%{http_code}\n"; then
+  if jenkins_post "$build_url"; then
     echo "Build queued successfully."
   else
     echo "Failed to queue build."
-    echo "Check JENKINS_JOB, JENKINS_BRANCH, and credentials if Jenkins security is enabled."
     exit 1
   fi
 }
 
 trigger_scan() {
+  require_jenkins_auth
+
   local scan_url="${JENKINS_URL%/}/job/${JENKINS_JOB}/build?delay=0sec"
 
   echo "Triggering multibranch scan via API"
   echo "Job: ${JENKINS_JOB}"
 
-  if jenkins_post "$scan_url" -o /dev/null -w "HTTP_STATUS:%{http_code}\n"; then
+  if jenkins_post "$scan_url"; then
     echo "Multibranch scan queued."
   else
     echo "Failed to queue multibranch scan."

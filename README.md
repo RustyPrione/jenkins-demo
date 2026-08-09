@@ -76,17 +76,29 @@ Use the local trigger script to simulate a GitHub webhook or queue a build direc
 ```bash
 chmod +x scripts/trigger-pipeline.sh
 
-# Simulate GitHub push webhook (requires GitHub / Branch Source plugin in Jenkins)
+# Simulate GitHub push webhook (no Jenkins login required)
 ./scripts/trigger-pipeline.sh webhook
 
-# Direct Jenkins API trigger (most reliable for local demo)
+# Direct Jenkins API trigger (requires Jenkins API token)
 ./scripts/trigger-pipeline.sh api
 
-# Multibranch scan + branch build
+# Multibranch scan + branch build (requires Jenkins API token)
 ./scripts/trigger-pipeline.sh scan
 ```
 
-Optional environment variables:
+`webhook` mode works without credentials. `api` and `scan` return **403 Forbidden** unless you provide a Jenkins user + API token.
+
+Set credentials once in `.jenkins-env` (this file is gitignored — do not commit tokens):
+
+```bash
+cp jenkins.env.example .jenkins-env
+# edit .jenkins-env with your Jenkins username and API token
+./scripts/trigger-pipeline.sh api
+```
+
+Important: never put API tokens inside `trigger-pipeline.sh` or push them to GitHub.
+
+Or export them inline:
 
 ```bash
 export JENKINS_URL=http://localhost:8080
@@ -103,11 +115,10 @@ Typical workflow:
 git add .
 git commit -m "Update demo app"
 git push origin main
-./scripts/trigger-pipeline.sh api
+./scripts/trigger-pipeline.sh webhook
 ```
 
-If Jenkins security is enabled, create an API token under **User → Configure → API Token**
-and set `JENKINS_USER` and `JENKINS_API_TOKEN` before running the script.
+Create an API token under **User → Configure → API Token** if you want to use `api` or `scan`.
 
 ## Useful commands
 
