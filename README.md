@@ -68,6 +68,47 @@ docker run --rm -p 8081:80 local/jenkins-demo:<commit-sha>
 
 Open http://localhost:8081
 
+## Trigger pipeline after a local push
+
+GitHub cannot reach `http://localhost:8080`, so pushes do not auto-trigger Jenkins.
+Use the local trigger script to simulate a GitHub webhook or queue a build directly.
+
+```bash
+chmod +x scripts/trigger-pipeline.sh
+
+# Simulate GitHub push webhook (requires GitHub / Branch Source plugin in Jenkins)
+./scripts/trigger-pipeline.sh webhook
+
+# Direct Jenkins API trigger (most reliable for local demo)
+./scripts/trigger-pipeline.sh api
+
+# Multibranch scan + branch build
+./scripts/trigger-pipeline.sh scan
+```
+
+Optional environment variables:
+
+```bash
+export JENKINS_URL=http://localhost:8080
+export JENKINS_JOB=job-demo
+export JENKINS_BRANCH=main
+export GITHUB_REPO=RustyPrione/jenkins-demo
+export JENKINS_USER=admin
+export JENKINS_API_TOKEN=your-api-token
+```
+
+Typical workflow:
+
+```bash
+git add .
+git commit -m "Update demo app"
+git push origin main
+./scripts/trigger-pipeline.sh api
+```
+
+If Jenkins security is enabled, create an API token under **User → Configure → API Token**
+and set `JENKINS_USER` and `JENKINS_API_TOKEN` before running the script.
+
 ## Useful commands
 
 Start Jenkins:
