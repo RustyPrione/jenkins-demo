@@ -1,0 +1,5 @@
+
+Jenkins is starting at http://localhost:8080
+
+Initial admin password:
+4966c01239c8473789a75f6c1de8dbc7
