@@ -9,3 +9,6 @@ LABEL commit="${COMMIT_SHA}" \
       build-date="${BUILD_DATE}"
 
 EXPOSE 80
+
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
+  CMD wget -q -O- http://127.0.0.1/ >/dev/null || exit 1

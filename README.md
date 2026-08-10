@@ -48,25 +48,34 @@ The repository is mounted read-only into the Jenkins container at `/workspace`, 
 | Stage | What it does |
 |-------|----------------|
 | Checkout | Checks out the repo and sets `COMMIT_SHA` |
-| Environment Info | Prints branch, commit, and image name |
+| Environment Info | Prints branch, commit, image name, and deploy URL |
 | Validate & Governance | Verifies Dockerfile exists and Docker CLI works |
 | Build Docker Image | Builds `local/jenkins-demo:<commit-sha>` |
+| Deploy Local | Runs the image as `jenkins-demo-app` on http://localhost:8081 |
 
-## Verify the build
+## Verify the build and deployment
 
-After a successful run:
+After a successful pipeline run, the app is deployed automatically:
+
+```bash
+docker ps --filter name=jenkins-demo-app
+curl http://localhost:8081
+```
+
+Open http://localhost:8081 in your browser.
+
+To stop the deployed app:
+
+```bash
+docker rm -f jenkins-demo-app
+```
+
+Manual image run (optional):
 
 ```bash
 docker images | grep jenkins-demo
+docker run --rm -p 8082:80 local/jenkins-demo:<commit-sha>
 ```
-
-Run the built image:
-
-```bash
-docker run --rm -p 8081:80 local/jenkins-demo:<commit-sha>
-```
-
-Open http://localhost:8081
 
 ## Trigger pipeline after a local push
 
